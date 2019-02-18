@@ -26,7 +26,7 @@ jobs:
       echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
     displayName: 'Install rust'
   - script: rustc --version
-  - script: cargo test
+  - script: cargo test -- --nocapture
 
 - job: Windows
   pool:
