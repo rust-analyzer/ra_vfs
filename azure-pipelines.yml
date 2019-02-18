@@ -17,16 +17,16 @@ jobs:
   - script: rustc --version
   - script: cargo test
 
-# - job: macOS
-#   pool:
-#     vmImage: 'macOS-10.13'
-#   steps:
-#   - script: |
-#       curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
-#       echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
-#     displayName: 'Install rust'
-#   - script: rustc --version
-#   - script: cargo test
+- job: macOS
+  pool:
+    vmImage: 'macOS-10.13'
+  steps:
+  - script: |
+      curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
+      echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
+    displayName: 'Install rust'
+  - script: rustc --version
+  - script: cargo test
 
 # - job: Windows
 #   pool:
