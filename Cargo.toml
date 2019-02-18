@@ -3,6 +3,10 @@ edition = "2018"
 name = "ra_vfs"
 version = "0.1.0"
 authors = ["rust-analyzer developers"]
+description = "Virtual File System abstraction for rust-analyzer"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/rust-analyzer/ra_vfs"
+
 
 [dependencies]
 walkdir = "2.2.7"
