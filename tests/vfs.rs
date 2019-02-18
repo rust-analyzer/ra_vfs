@@ -84,25 +84,7 @@ fn test_vfs_works() -> std::io::Result<()> {
 
     // rust-analyzer#734: fsevents has a bunch of events still sitting around.
     process_tasks_in_range(&mut vfs, 0, if cfg!(target_os = "macos") { 7 } else { 0 });
-    match vfs.commit_changes().as_slice() {
-        [] => {}
-
-        // This arises on fsevents (unless we wait 30 seconds before
-        // calling `Vfs::new` above). We need to churn through these
-        // events so that we can focus on the event that arises from
-        // the `fs::write` below.
-        [VfsChange::ChangeFile { .. }, // hello
-         VfsChange::ChangeFile { .. }, // world
-         VfsChange::AddFile { .. }, // b/baz.rs, nested hello
-         VfsChange::ChangeFile { .. }, // hello
-         VfsChange::ChangeFile { .. }, // world
-         VfsChange::ChangeFile { .. }, // nested hello
-         VfsChange::ChangeFile { .. }, // nested hello
-        ] => {}
-
-        changes => panic!("Expected events for setting up initial files, got: {GOT:?}",
-                          GOT=changes),
-    }
+    assert!(vfs.commit_changes().is_empty());
 
     fs::write(&dir.path().join("a/b/baz.rs"), "quux").unwrap();
     process_tasks(&mut vfs, 1);

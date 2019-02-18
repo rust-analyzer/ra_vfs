@@ -166,6 +166,8 @@ impl Vfs {
     }
 
     pub fn commit_changes(&mut self) -> Vec<VfsChange> {
+        // FIXME: ideally we should compact changes here, such that we send at
+        // most one event per VfsFile.
         mem::replace(&mut self.pending_changes, Vec::new())
     }
 
@@ -210,7 +212,9 @@ impl Vfs {
                         self.add_file_event(root, path, text, false);
                     }
                     (Some(file), Some(text)) => {
-                        self.change_file_event(file, text, false);
+                        if *self.file(file).text != text {
+                            self.change_file_event(file, text, false);
+                        }
                     }
                     (None, None) => (),
                 }
