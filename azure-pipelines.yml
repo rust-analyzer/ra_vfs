@@ -16,6 +16,7 @@ jobs:
     displayName: 'Install rust'
   - script: rustc --version
   - script: cargo test
+  - script: cargo test --release
 
 - job: macOS
   pool:
@@ -27,6 +28,7 @@ jobs:
     displayName: 'Install rust'
   - script: rustc --version
   - script: cargo test
+  - script: cargo test --release
 
 - job: Windows
   pool:
@@ -39,3 +41,4 @@ jobs:
     displayName: 'Install rust'
   - script: rustc --version
   - script: cargo test
+  - script: cargo test --release
