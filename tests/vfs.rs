@@ -44,7 +44,14 @@ macro_rules! assert_match {
 fn test_vfs_works() -> std::io::Result<()> {
     // Logger::with_str("vfs=debug,ra_vfs=debug").start().unwrap();
 
-    let files = [("a/foo.rs", "hello"), ("a/bar.rs", "world"), ("a/b/baz.rs", "nested hello")];
+    let files = [
+        ("a/foo.rs", "hello"),
+        ("a/bar.rs", "world"),
+        ("a/b/baz.rs", "nested hello"),
+        ("a/LICENSE", "extensionless file"),
+        ("a/b/AUTHOR", "extensionless file"),
+        ("a/.hidden.txt", "hidden file"),
+    ];
 
     let dir = tempdir().unwrap();
     for (path, text) in files.iter() {

@@ -95,10 +95,29 @@ impl RootData {
         }
 
         match path.extension() {
-            None | Some("rs") => false,
-            _ => true,
+            Some("rs") => false,
+            Some(_) => true,
+            // Exclude extension-less and hidden files
+            None => is_extensionless_or_hidden_file(&self.path, path),
         }
     }
+}
+
+fn is_extensionless_or_hidden_file<P: AsRef<Path>>(base: P, relative_path: &RelativePath) -> bool {
+    // Exclude files/paths starting with "."
+    if relative_path.file_stem().map(|s| s.starts_with(".")).unwrap_or(false) {
+        return true;
+    }
+
+    if relative_path.extension().is_some() {
+        return false;
+    }
+
+    let path = relative_path.to_path(base);
+
+    std::fs::metadata(path)
+        .map(|m| m.is_file())
+        .unwrap_or(false)
 }
 
 fn rel_path(base: &Path, path: &Path) -> Option<RelativePathBuf> {
