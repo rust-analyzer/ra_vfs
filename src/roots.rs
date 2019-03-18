@@ -117,7 +117,7 @@ impl Roots {
 }
 
 impl RootData {
-    pub fn new(entry: RootEntry, excluded_dirs: Vec<RelativePathBuf>) -> Self {
+    fn new(entry: RootEntry, excluded_dirs: Vec<RelativePathBuf>) -> RootData {
         let mut canonical_path = entry.path.canonicalize().ok();
         if Some(&entry.path) == canonical_path.as_ref() {
             canonical_path = None;

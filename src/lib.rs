@@ -33,7 +33,7 @@ use crate::{
     roots::{Roots, FileType},
 };
 
-pub use crate::roots::{VfsRoot};
+pub use crate::roots::VfsRoot;
 
 /// a `Filter` is used to determine whether a file or a folder
 /// under the specific root is included.
