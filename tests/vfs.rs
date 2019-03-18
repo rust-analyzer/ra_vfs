@@ -2,7 +2,7 @@ use std::{collections::HashSet, fs, time::Duration};
 
 // use flexi_logger::Logger;
 use crossbeam_channel::RecvTimeoutError;
-use ra_vfs::{Vfs, VfsChange};
+use ra_vfs::{Vfs, VfsChange, RootEntry, Filter, RelativePath};
 use tempfile::tempdir;
 
 /// Processes exactly `num_tasks` events waiting in the `vfs` message queue.
@@ -40,6 +40,112 @@ macro_rules! assert_match {
     };
 }
 
+struct IncludeRustFiles;
+
+impl IncludeRustFiles {
+    fn boxed() -> Box<Self> {
+        Box::new(Self {})
+    }
+}
+
+impl Filter for IncludeRustFiles {
+    fn include_dir(&self, dir_path: &RelativePath) -> bool {
+        const IGNORED_FOLDERS: &[&str] = &["node_modules", "target", ".git"];
+
+        let is_ignored = dir_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
+
+        let hidden = dir_path.file_stem().map(|s| s.starts_with(".")).unwrap_or(false);
+
+        !is_ignored && !hidden
+    }
+
+    fn include_file(&self, file_path: &RelativePath) -> bool {
+        file_path.extension() == Some("rs")
+    }
+}
+
+#[test]
+fn test_vfs_ignore() -> std::io::Result<()> {
+    // flexi_logger::Logger::with_str("vfs=debug,ra_vfs=debug").start().unwrap();
+
+    let files = [
+        ("ignore_a/foo.rs", "hello"),
+        ("ignore_a/bar.rs", "world"),
+        ("ignore_a/b/baz.rs", "nested hello"),
+        ("ignore_a/LICENSE", "extensionless file"),
+        ("ignore_a/b/AUTHOR", "extensionless file"),
+        ("ignore_a/.hidden.txt", "hidden file"),
+        ("ignore_a/.hidden_folder/file.rs", "hidden folder containing rust file"),
+        (
+            "ignore_a/.hidden_folder/nested/foo.rs",
+            "file inside nested folder inside a hidden folder",
+        ),
+        ("ignore_a/node_modules/module.js", "hidden file js"),
+        ("ignore_a/node_modules/module2.rs", "node rust"),
+        ("ignore_a/node_modules/nested/foo.bar", "hidden file bar"),
+    ];
+
+    let dir = tempdir().unwrap();
+    for (path, text) in files.iter() {
+        let file_path = dir.path().join(path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(file_path, text)?
+    }
+
+    let a_root = dir.path().join("ignore_a");
+    let b_root = dir.path().join("ignore_a/b");
+
+    let (mut vfs, _) = Vfs::new(vec![
+        RootEntry::new(a_root, IncludeRustFiles::boxed()),
+        RootEntry::new(b_root, IncludeRustFiles::boxed()),
+    ]);
+    process_tasks(&mut vfs, 2);
+    {
+        let files = vfs
+            .commit_changes()
+            .into_iter()
+            .flat_map(|change| {
+                let files = match change {
+                    VfsChange::AddRoot { files, .. } => files,
+                    _ => panic!("unexpected change"),
+                };
+                files.into_iter().map(|(_id, path, text)| {
+                    let text: String = (&*text).clone();
+                    (format!("{}", path.display()), text)
+                })
+            })
+            .collect::<HashSet<_>>();
+
+        let expected_files = [("foo.rs", "hello"), ("bar.rs", "world"), ("baz.rs", "nested hello")]
+            .iter()
+            .map(|(path, text)| (path.to_string(), text.to_string()))
+            .collect::<HashSet<_>>();
+
+        assert_eq!(files, expected_files);
+    }
+
+    // rust-analyzer#734: fsevents has a bunch of events still sitting around.
+    process_tasks_in_range(&mut vfs, 0, if cfg!(target_os = "macos") { 7 } else { 0 });
+    assert!(vfs.commit_changes().is_empty());
+
+    // These will get filtered out
+    vfs.add_file_overlay(&dir.path().join("ignore_a/node_modules/spam.rs"), "spam".to_string());
+    vfs.add_file_overlay(&dir.path().join("ignore_a/node_modules/spam2.rs"), "spam".to_string());
+    vfs.add_file_overlay(&dir.path().join("ignore_a/node_modules/spam3.rs"), "spam".to_string());
+    vfs.add_file_overlay(&dir.path().join("ignore_a/LICENSE2"), "text".to_string());
+    assert_match!(vfs.commit_changes().as_slice(), []);
+
+    fs::create_dir_all(dir.path().join("ignore_a/node_modules/sub1")).unwrap();
+    fs::write(dir.path().join("ignore_a/node_modules/sub1/new.rs"), "new hello").unwrap();
+
+    assert_match!(
+        vfs.task_receiver().recv_timeout(Duration::from_millis(300)), // slightly more than watcher debounce delay
+        Err(RecvTimeoutError::Timeout)
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_vfs_works() -> std::io::Result<()> {
     // Logger::with_str("vfs=debug,ra_vfs=debug").start().unwrap();
@@ -63,7 +169,10 @@ fn test_vfs_works() -> std::io::Result<()> {
     let a_root = dir.path().join("a");
     let b_root = dir.path().join("a/b");
 
-    let (mut vfs, _) = Vfs::new(vec![a_root, b_root]);
+    let (mut vfs, _) = Vfs::new(vec![
+        RootEntry::new(a_root, IncludeRustFiles::boxed()),
+        RootEntry::new(b_root, IncludeRustFiles::boxed()),
+    ]);
     process_tasks(&mut vfs, 2);
     {
         let files = vfs

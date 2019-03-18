@@ -25,16 +25,80 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
-use relative_path::{RelativePath, RelativePathBuf};
+pub use relative_path::{RelativePath, RelativePathBuf};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     io::{TaskResult, Worker},
-    roots::Roots,
+    roots::{Roots, FileType},
 };
 
 pub use crate::roots::VfsRoot;
 
+/// a `Filter` is used to determine whether a file or a folder
+/// under the specific root is included.
+///
+/// *NOTE*: If the parent folder of a file is not included, then
+/// `include_file` will not be called.
+///
+/// # Example
+///
+/// Implementing `Filter` for rust files:
+///
+/// ```
+/// use ra_vfs::{Filter, RelativePath};
+///
+/// struct IncludeRustFiles;
+///
+/// impl Filter for IncludeRustFiles {
+///     fn include_dir(&self, dir_path: &RelativePath) -> bool {
+///         // These folders are ignored
+///         const IGNORED_FOLDERS: &[&str] = &["node_modules", "target", ".git"];
+///
+///         let is_ignored = dir_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
+///
+///         !is_ignored
+///     }
+///
+///     fn include_file(&self, file_path: &RelativePath) -> bool {
+///         // Only include rust files
+///         file_path.extension() == Some("rs")
+///     }
+/// }
+/// ```
+pub trait Filter: Send + Sync {
+    fn include_dir(&self, dir_path: &RelativePath) -> bool;
+    fn include_file(&self, file_path: &RelativePath) -> bool;
+}
+
+/// RootEntry identifies a root folder with a given filter
+/// used to determine whether to include or exclude files and folders under it.
+pub struct RootEntry {
+    path: PathBuf,
+    filter: Box<dyn Filter>,
+}
+
+impl std::fmt::Debug for RootEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "RootEntry({})", self.path.display())
+    }
+}
+
+impl Eq for RootEntry {}
+impl PartialEq for RootEntry {
+    fn eq(&self, other: &Self) -> bool {
+        // Entries are equal based on their paths
+        self.path == other.path
+    }
+}
+
+impl RootEntry {
+    /// Create a new `RootEntry` with the given `filter` applied to
+    /// files and folder under it.
+    pub fn new(path: PathBuf, filter: Box<dyn Filter>) -> Self {
+        RootEntry { path, filter }
+    }
+}
 /// Opaque wrapper around file-system event.
 ///
 /// Calling code is expected to just pass `VfsTask` to `handle_task` method. It
@@ -85,7 +149,7 @@ pub enum VfsChange {
 }
 
 impl Vfs {
-    pub fn new(roots: Vec<PathBuf>) -> (Vfs, Vec<VfsRoot>) {
+    pub fn new(roots: Vec<RootEntry>) -> (Vfs, Vec<VfsRoot>) {
         let roots = Arc::new(Roots::new(roots));
         let worker = io::start(Arc::clone(&roots));
         let mut root2files = FxHashMap::default();
@@ -281,7 +345,7 @@ impl Vfs {
     }
 
     fn find_root(&self, path: &Path) -> Option<(VfsRoot, RelativePathBuf, Option<VfsFile>)> {
-        let (root, path) = self.roots.find(&path)?;
+        let (root, path) = self.roots.find(&path, FileType::File)?;
         let file = self.find_file(root, &path);
         Some((root, path, file))
     }
