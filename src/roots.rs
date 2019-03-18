@@ -7,6 +7,35 @@ use relative_path::{ RelativePath, RelativePathBuf};
 
 /// a `Filter` is used to determine whether a file or a folder
 /// under the specific root is included.
+///
+/// *NOTE*: If the parent folder of a file is not included, then
+/// `include_file` will not be called.
+///
+/// # Example
+///
+/// Implementing `Filter` for rust files:
+///
+/// ```
+/// use ra_vfs::{Filter, RelativePath};
+///
+/// struct IncludeRustFiles;
+///
+/// impl Filter for IncludeRustFiles {
+///     fn include_folder(&self, folder_path: &RelativePath) -> bool {
+///         // These folders are ignored
+///         const IGNORED_FOLDERS: &[&str] = &["node_modules", "target", ".git"];
+///
+///         let is_ignored = folder_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
+///
+///         !is_ignored
+///     }
+///
+///     fn include_file(&self, file_path: &RelativePath) -> bool {
+///         // Only include rust files
+///         file_path.extension() == Some("rs")
+///     }
+/// }
+/// ```
 pub trait Filter: Send + Sync {
     fn include_folder(&self, folder_path: &RelativePath) -> bool;
     fn include_file(&self, file_path: &RelativePath) -> bool;
