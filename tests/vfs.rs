@@ -49,12 +49,12 @@ impl IncludeRustFiles {
 }
 
 impl Filter for IncludeRustFiles {
-    fn include_folder(&self, folder_path: &RelativePath) -> bool {
+    fn include_dir(&self, dir_path: &RelativePath) -> bool {
         const IGNORED_FOLDERS: &[&str] = &["node_modules", "target", ".git"];
 
-        let is_ignored = folder_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
+        let is_ignored = dir_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
 
-        let hidden = folder_path.file_stem().map(|s| s.starts_with(".")).unwrap_or(false);
+        let hidden = dir_path.file_stem().map(|s| s.starts_with(".")).unwrap_or(false);
 
         !is_ignored && !hidden
     }

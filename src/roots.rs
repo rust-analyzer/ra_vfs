@@ -21,11 +21,11 @@ use relative_path::{ RelativePath, RelativePathBuf};
 /// struct IncludeRustFiles;
 ///
 /// impl Filter for IncludeRustFiles {
-///     fn include_folder(&self, folder_path: &RelativePath) -> bool {
+///     fn include_dir(&self, dir_path: &RelativePath) -> bool {
 ///         // These folders are ignored
 ///         const IGNORED_FOLDERS: &[&str] = &["node_modules", "target", ".git"];
 ///
-///         let is_ignored = folder_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
+///         let is_ignored = dir_path.components().any(|c| IGNORED_FOLDERS.contains(&c.as_str()));
 ///
 ///         !is_ignored
 ///     }
@@ -37,7 +37,7 @@ use relative_path::{ RelativePath, RelativePathBuf};
 /// }
 /// ```
 pub trait Filter: Send + Sync {
-    fn include_folder(&self, folder_path: &RelativePath) -> bool;
+    fn include_dir(&self, dir_path: &RelativePath) -> bool;
     fn include_file(&self, file_path: &RelativePath) -> bool;
 }
 
@@ -198,7 +198,7 @@ impl RootData {
         }
 
         let parent_included =
-            rel_path.parent().map(|d| self.entry.filter.include_folder(&d)).unwrap_or(true);
+            rel_path.parent().map(|d| self.entry.filter.include_dir(&d)).unwrap_or(true);
 
         if !parent_included {
             return false;
@@ -206,7 +206,7 @@ impl RootData {
 
         match expected {
             FileType::File => self.entry.filter.include_file(&rel_path),
-            FileType::Dir => self.entry.filter.include_folder(&rel_path),
+            FileType::Dir => self.entry.filter.include_dir(&rel_path),
         }
     }
 }
