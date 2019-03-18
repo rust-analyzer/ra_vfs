@@ -39,7 +39,8 @@ impl std::convert::From<std::fs::FileType> for FileType {
 /// specifies the source root or as a function which takes a `PathBuf` and
 /// returns `true` if path belongs to the source root
 struct RootData {
-    entry: RootEntry,
+    root: PathBuf,
+    filter: Box<dyn Filter>,
     // result of `root.canonicalize()` if that differs from `root`; `None` otherwise.
     canonical_path: Option<PathBuf>,
     excluded_dirs: Vec<RelativePathBuf>,
@@ -121,29 +122,29 @@ impl RootData {
         if Some(&entry.path) == canonical_path.as_ref() {
             canonical_path = None;
         }
-        RootData { entry, canonical_path, excluded_dirs }
+        RootData { root: entry.path, filter: entry.filter, canonical_path, excluded_dirs }
     }
 
     fn path(&self) -> &PathBuf {
-        &self.entry.path
+        &self.root
     }
 
     /// Returns true if the given `RelativePath` is included inside this `RootData`
     fn is_included(&self, rel_path: &RelativePathBuf, expected: FileType) -> bool {
-        if self.excluded_dirs.contains(&rel_path) {
+        if self.excluded_dirs.iter().any(|d| rel_path.starts_with(d)) {
             return false;
         }
 
         let parent_included =
-            rel_path.parent().map(|d| self.entry.filter.include_dir(&d)).unwrap_or(true);
+            rel_path.parent().map(|d| self.filter.include_dir(&d)).unwrap_or(true);
 
         if !parent_included {
             return false;
         }
 
         match expected {
-            FileType::File => self.entry.filter.include_file(&rel_path),
-            FileType::Dir => self.entry.filter.include_dir(&rel_path),
+            FileType::File => self.filter.include_file(&rel_path),
+            FileType::Dir => self.filter.include_dir(&rel_path),
         }
     }
 }
