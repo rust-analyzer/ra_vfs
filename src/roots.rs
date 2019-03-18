@@ -5,17 +5,75 @@ use std::{
 
 use relative_path::{ RelativePath, RelativePathBuf};
 
+/// a `Filter` is used to determine whether a file or a folder
+/// under the specific root is included.
+pub trait Filter: Send + Sync {
+    fn include_folder(&self, folder_path: &RelativePath) -> bool;
+    fn include_file(&self, file_path: &RelativePath) -> bool;
+}
+
+/// RootEntry identifies a root folder with a given filter
+/// used to determine whether to include or exclude files and folders under it.
+pub struct RootEntry {
+    path: PathBuf,
+    filter: Box<dyn Filter>,
+}
+
+impl std::fmt::Debug for RootEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "RootEntry({})", self.path.display())
+    }
+}
+
+impl Eq for RootEntry {}
+impl PartialEq for RootEntry {
+    fn eq(&self, other: &Self) -> bool {
+        // Entries are equal based on their paths
+        self.path == other.path
+    }
+}
+
+impl RootEntry {
+    /// Create a new `RootEntry` with the given `filter` applied to
+    /// files and folder under it.
+    pub fn new(path: PathBuf, filter: Box<dyn Filter>) -> Self {
+        RootEntry { path, filter }
+    }
+}
+
 /// VfsRoot identifies a watched directory on the file system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VfsRoot(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileType {
+    File,
+    Dir,
+}
+
+impl FileType {
+    pub(crate) fn is_dir(&self) -> bool {
+        *self == FileType::Dir
+    }
+}
+
+impl std::convert::From<std::fs::FileType> for FileType {
+    fn from(v: std::fs::FileType) -> Self {
+        if v.is_file() {
+            FileType::File
+        } else {
+            FileType::Dir
+        }
+    }
+}
+
 /// Describes the contents of a single source root.
 ///
-/// `RootConfig` can be thought of as a glob pattern like `src/**.rs` which
+/// `RootData` can be thought of as a glob pattern like `src/**.rs` which
 /// specifies the source root or as a function which takes a `PathBuf` and
-/// returns `true` iff path belongs to the source root
+/// returns `true` if path belongs to the source root
 struct RootData {
-    path: PathBuf,
+    entry: RootEntry,
     // result of `root.canonicalize()` if that differs from `root`; `None` otherwise.
     canonical_path: Option<PathBuf>,
     excluded_dirs: Vec<RelativePathBuf>,
@@ -26,22 +84,39 @@ pub(crate) struct Roots {
 }
 
 impl Roots {
-    pub(crate) fn new(mut paths: Vec<PathBuf>) -> Roots {
-        let mut roots = Vec::new();
+    pub(crate) fn new(mut paths: Vec<RootEntry>) -> Roots {
         // A hack to make nesting work.
-        paths.sort_by_key(|it| std::cmp::Reverse(it.as_os_str().len()));
+        paths.sort_by_key(|it| std::cmp::Reverse(it.path.as_os_str().len()));
         paths.dedup();
-        for (i, path) in paths.iter().enumerate() {
-            let nested_roots =
-                paths[..i].iter().filter_map(|it| rel_path(path, it)).collect::<Vec<_>>();
 
-            roots.push(RootData::new(path.clone(), nested_roots));
-        }
+        // First gather all the nested roots for each path
+        let nested_roots = paths
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                paths[..i]
+                    .iter()
+                    .filter_map(|it| rel_path(&entry.path, &it.path))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        // Then combine the entry with the matching nested_roots
+        let roots = paths
+            .into_iter()
+            .zip(nested_roots.into_iter())
+            .map(|(entry, nested_roots)| RootData::new(entry, nested_roots))
+            .collect::<Vec<_>>();
+
         Roots { roots }
     }
-    pub(crate) fn find(&self, path: &Path) -> Option<(VfsRoot, RelativePathBuf)> {
+    pub(crate) fn find(
+        &self,
+        path: &Path,
+        expected: FileType,
+    ) -> Option<(VfsRoot, RelativePathBuf)> {
         self.iter().find_map(|root| {
-            let rel_path = self.contains(root, path)?;
+            let rel_path = self.contains(root, path, expected)?;
             Some((root, rel_path))
         })
     }
@@ -52,16 +127,21 @@ impl Roots {
         (0..self.roots.len()).into_iter().map(|idx| VfsRoot(idx as u32))
     }
     pub(crate) fn path(&self, root: VfsRoot) -> &Path {
-        self.root(root).path.as_path()
+        self.root(root).path().as_path()
     }
-    /// Checks if root contains a path and returns a root-relative path.
-    pub(crate) fn contains(&self, root: VfsRoot, path: &Path) -> Option<RelativePathBuf> {
+
+    /// Checks if root contains a path with the given `FileType`
+    /// and returns a root-relative path.
+    pub(crate) fn contains(
+        &self,
+        root: VfsRoot,
+        path: &Path,
+        expected: FileType,
+    ) -> Option<RelativePathBuf> {
         let data = self.root(root);
-        iter::once(&data.path)
+        iter::once(data.path())
             .chain(data.canonical_path.as_ref().into_iter())
-            .find_map(|base| rel_path(base, path))
-            .filter(|path| !data.excluded_dirs.contains(path))
-            .filter(|path| !data.is_excluded(path))
+            .find_map(|base| to_relative_path(base, path, &data, expected))
     }
 
     fn root(&self, root: VfsRoot) -> &RootData {
@@ -70,58 +150,63 @@ impl Roots {
 }
 
 impl RootData {
-    fn new(path: PathBuf, excluded_dirs: Vec<RelativePathBuf>) -> RootData {
-        let mut canonical_path = path.canonicalize().ok();
-        if Some(&path) == canonical_path.as_ref() {
+    pub fn new(entry: RootEntry, excluded_dirs: Vec<RelativePathBuf>) -> Self {
+        let mut canonical_path = entry.path.canonicalize().ok();
+        if Some(&entry.path) == canonical_path.as_ref() {
             canonical_path = None;
         }
-        RootData { path, canonical_path, excluded_dirs }
+        RootData { entry, canonical_path, excluded_dirs }
     }
 
-    fn is_excluded(&self, path: &RelativePath) -> bool {
-        if self.excluded_dirs.iter().any(|it| it == path) {
-            return true;
-        }
-        // Ignore some common directories.
-        //
-        // FIXME: don't hard-code, specify at source-root creation time using
-        // gitignore
-        for (i, c) in path.components().enumerate() {
-            if let relative_path::Component::Normal(c) = c {
-                if (i == 0 && c == "target") || c == ".git" || c == "node_modules" {
-                    return true;
-                }
-            }
+    fn path(&self) -> &PathBuf {
+        &self.entry.path
+    }
+
+    /// Returns true if the given `RelativePath` is included inside this `RootData`
+    fn is_included(&self, rel_path: &RelativePathBuf, expected: FileType) -> bool {
+        if self.excluded_dirs.contains(&rel_path) {
+            return false;
         }
 
-        match path.extension() {
-            Some("rs") => false,
-            Some(_) => true,
-            // Exclude extension-less and hidden files
-            None => is_extensionless_or_hidden_file(&self.path, path),
+        let parent_included =
+            rel_path.parent().map(|d| self.entry.filter.include_folder(&d)).unwrap_or(true);
+
+        if !parent_included {
+            return false;
+        }
+
+        match expected {
+            FileType::File => self.entry.filter.include_file(&rel_path),
+            FileType::Dir => self.entry.filter.include_folder(&rel_path),
         }
     }
 }
 
-fn is_extensionless_or_hidden_file<P: AsRef<Path>>(base: P, relative_path: &RelativePath) -> bool {
-    // Exclude files/paths starting with "."
-    if relative_path.file_stem().map(|s| s.starts_with(".")).unwrap_or(false) {
-        return true;
-    }
-
-    if relative_path.extension().is_some() {
-        return false;
-    }
-
-    let path = relative_path.to_path(base);
-
-    std::fs::metadata(path)
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-}
-
+/// Returns the path relative to `base`
 fn rel_path(base: &Path, path: &Path) -> Option<RelativePathBuf> {
     let path = path.strip_prefix(base).ok()?;
     let path = RelativePathBuf::from_path(path).unwrap();
     Some(path)
+}
+
+/// Returns the path relative to `base` with filtering applied based on `data`
+fn to_relative_path(
+    base: &Path,
+    path: &Path,
+    data: &RootData,
+    expected: FileType,
+) -> Option<RelativePathBuf> {
+    let rel_path = rel_path(base, path)?;
+
+    // Apply filtering _only_ if the relative path is non-empty
+    // if it's empty, it means we are currently processing the root
+    if rel_path.as_str().is_empty() {
+        return Some(rel_path);
+    }
+
+    if data.is_included(&rel_path, expected) {
+        Some(rel_path)
+    } else {
+        None
+    }
 }

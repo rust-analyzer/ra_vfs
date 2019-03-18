@@ -10,7 +10,7 @@ use relative_path::RelativePathBuf;
 use walkdir::WalkDir;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher as _Watcher};
 
-use crate::{Roots, VfsRoot, VfsTask};
+use crate::{Roots, VfsRoot, VfsTask, roots::FileType};
 
 pub(crate) enum Task {
     AddRoot { root: VfsRoot },
@@ -220,14 +220,15 @@ fn handle_change(
     path: PathBuf,
     kind: ChangeKind,
 ) {
-    let (root, rel_path) = match roots.find(&path) {
+    let ft = if path.is_file() { FileType::File } else { FileType::Dir };
+    let (root, rel_path) = match roots.find(&path, ft) {
         None => return,
         Some(it) => it,
     };
     match kind {
         ChangeKind::Create => {
             let mut paths = Vec::new();
-            if path.is_dir() {
+            if ft.is_dir() {
                 paths.extend(watch_recursive(watcher, &path, roots, root));
             } else {
                 paths.push(rel_path);
@@ -259,7 +260,7 @@ fn watch_recursive(
     let mut files = Vec::new();
     for entry in WalkDir::new(dir)
         .into_iter()
-        .filter_entry(|it| roots.contains(root, it.path()).is_some())
+        .filter_entry(|it| roots.contains(root, it.path(), it.file_type().into()).is_some())
         .filter_map(|it| it.map_err(|e| log::warn!("watcher error: {}", e)).ok())
     {
         if entry.file_type().is_dir() {
@@ -267,7 +268,7 @@ fn watch_recursive(
                 watch_one(watcher, entry.path());
             }
         } else {
-            let path = roots.contains(root, entry.path()).unwrap();
+            let path = roots.contains(root, entry.path(), FileType::File).unwrap();
             files.push(path.to_owned());
         }
     }

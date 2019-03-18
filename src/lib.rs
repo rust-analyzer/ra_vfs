@@ -25,15 +25,15 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
-use relative_path::{RelativePath, RelativePathBuf};
+pub use relative_path::{RelativePath, RelativePathBuf};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     io::{TaskResult, Worker},
-    roots::Roots,
+    roots::{Roots, FileType},
 };
 
-pub use crate::roots::VfsRoot;
+pub use crate::roots::{VfsRoot, RootEntry, Filter};
 
 /// Opaque wrapper around file-system event.
 ///
@@ -85,7 +85,7 @@ pub enum VfsChange {
 }
 
 impl Vfs {
-    pub fn new(roots: Vec<PathBuf>) -> (Vfs, Vec<VfsRoot>) {
+    pub fn new(roots: Vec<RootEntry>) -> (Vfs, Vec<VfsRoot>) {
         let roots = Arc::new(Roots::new(roots));
         let worker = io::start(Arc::clone(&roots));
         let mut root2files = FxHashMap::default();
@@ -281,7 +281,7 @@ impl Vfs {
     }
 
     fn find_root(&self, path: &Path) -> Option<(VfsRoot, RelativePathBuf, Option<VfsFile>)> {
-        let (root, path) = self.roots.find(&path)?;
+        let (root, path) = self.roots.find(&path, FileType::File)?;
         let file = self.find_file(root, &path);
         Some((root, path, file))
     }
