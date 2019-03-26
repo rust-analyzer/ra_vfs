@@ -258,6 +258,7 @@ fn watch_recursive(
     root: VfsRoot,
 ) -> Vec<RelativePathBuf> {
     let mut files = Vec::new();
+    // FIXME: this is broken for symlinks at the moment
     for entry in WalkDir::new(dir)
         .into_iter()
         .filter_entry(|it| roots.contains(root, it.path(), it.file_type().into()).is_some())
@@ -267,8 +268,7 @@ fn watch_recursive(
             if let Some(watcher) = &mut watcher {
                 watch_one(watcher, entry.path());
             }
-        } else {
-            let path = roots.contains(root, entry.path(), FileType::File).unwrap();
+        } else if let Some(path) = roots.contains(root, entry.path(), FileType::File) {
             files.push(path.to_owned());
         }
     }
