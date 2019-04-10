@@ -362,3 +362,29 @@ impl Vfs {
         &mut self.files[file.0 as usize]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct NoopFilter;
+
+    impl Filter for NoopFilter {
+        fn include_dir(&self, _: &RelativePath) -> bool {
+            true
+        }
+        fn include_file(&self, _: &RelativePath) -> bool {
+            true
+        }
+    }
+
+    fn entry(s: &str) -> RootEntry {
+        RootEntry::new(s.into(), Box::new(NoopFilter))
+    }
+
+    #[test]
+    fn vfs_deduplicates() {
+        let entries = vec!["/foo", "/bar", "/foo"].into_iter().map(entry).collect();
+        let (_, roots) = Vfs::new(entries);
+        assert_eq!(roots.len(), 2);
+    }
+}
