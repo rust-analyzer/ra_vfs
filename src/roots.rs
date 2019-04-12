@@ -52,9 +52,11 @@ pub(crate) struct Roots {
 
 impl Roots {
     pub(crate) fn new(mut paths: Vec<RootEntry>) -> Roots {
+        paths.sort_by(|a, b| a.path.cmp(&b.path));
+        paths.dedup();
+
         // A hack to make nesting work.
         paths.sort_by_key(|it| std::cmp::Reverse(it.path.as_os_str().len()));
-        paths.dedup();
 
         // First gather all the nested roots for each path
         let nested_roots = paths
