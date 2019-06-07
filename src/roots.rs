@@ -154,8 +154,7 @@ impl RootData {
 /// Returns the path relative to `base`
 fn rel_path(base: &Path, path: &Path) -> Option<RelativePathBuf> {
     let path = path.strip_prefix(base).ok()?;
-    let path = RelativePathBuf::from_path(path).unwrap();
-    Some(path)
+    RelativePathBuf::from_path(path).ok()
 }
 
 /// Returns the path relative to `base` with filtering applied based on `data`
