@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::{mpsc, Arc},
     time::Duration,
@@ -10,7 +9,7 @@ use relative_path::RelativePathBuf;
 use walkdir::WalkDir;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher as _Watcher};
 
-use crate::{Roots, VfsRoot, VfsTask, roots::FileType};
+use crate::{Roots, VfsRoot, VfsTask, roots::FileType, LineEndings, read_to_string};
 
 pub(crate) enum Task {
     AddRoot { root: VfsRoot },
@@ -22,7 +21,7 @@ pub(crate) enum Task {
 pub(crate) enum TaskResult {
     /// Emitted when we've recursively scanned a source root during the initial
     /// load.
-    BulkLoadRoot { root: VfsRoot, files: Vec<(RelativePathBuf, String)> },
+    BulkLoadRoot { root: VfsRoot, files: Vec<(RelativePathBuf, String, LineEndings)> },
     /// Emitted when we've noticed that a single file has changed.
     ///
     /// Note that this by design does not distinguish between
@@ -30,7 +29,12 @@ pub(crate) enum TaskResult {
     /// the file. The idea is to guarantee that in the quiescent state the sum
     /// of all results equals to the current state of the file system, while
     /// allowing to skip intermediate events in non-quiescent states.
-    SingleFile { root: VfsRoot, path: RelativePathBuf, text: Option<String> },
+    SingleFile {
+        root: VfsRoot,
+        path: RelativePathBuf,
+        text: Option<String>,
+        line_endings: LineEndings,
+    },
 }
 
 /// The kind of raw notification we've received from the notify library.
@@ -173,8 +177,8 @@ fn watch_root(
         .into_iter()
         .filter_map(|path| {
             let abs_path = path.to_path(&root_path);
-            let text = read_to_string(&abs_path)?;
-            Some((path, text))
+            let (text, line_endings) = read_to_string(&abs_path)?;
+            Some((path, text, line_endings))
         })
         .collect();
     let res = TaskResult::BulkLoadRoot { root, files };
@@ -237,15 +241,22 @@ fn handle_change(
                 .into_iter()
                 .try_for_each(|rel_path| {
                     let abs_path = rel_path.to_path(&roots.path(root));
-                    let text = read_to_string(&abs_path);
-                    let res = TaskResult::SingleFile { root, path: rel_path, text };
+                    let (text, line_endings) = match read_to_string(&abs_path) {
+                        Some((text, line_endings)) => (Some(text), line_endings),
+                        None => (None, LineEndings::default()),
+                    };
+
+                    let res = TaskResult::SingleFile { root, path: rel_path, text, line_endings };
                     sender.send(VfsTask(res))
                 })
                 .unwrap()
         }
         ChangeKind::Write | ChangeKind::Remove => {
-            let text = read_to_string(&path);
-            let res = TaskResult::SingleFile { root, path: rel_path, text };
+            let (text, line_endings) = match read_to_string(&path) {
+                Some((text, line_endings)) => (Some(text), line_endings),
+                None => (None, LineEndings::default()),
+            };
+            let res = TaskResult::SingleFile { root, path: rel_path, text, line_endings };
             sender.send(VfsTask(res)).unwrap();
         }
     }
@@ -280,8 +291,4 @@ fn watch_one(watcher: &mut RecommendedWatcher, dir: &Path) {
         Ok(()) => log::debug!("watching \"{}\"", dir.display()),
         Err(e) => log::warn!("could not watch \"{}\": {}", dir.display(), e),
     }
-}
-
-fn read_to_string(path: &Path) -> Option<String> {
-    fs::read_to_string(&path).map_err(|e| log::warn!("failed to read file {}", e)).ok()
 }

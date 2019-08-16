@@ -25,7 +25,6 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
-pub use relative_path::{RelativePath, RelativePathBuf};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -33,7 +32,20 @@ use crate::{
     roots::{Roots, FileType},
 };
 
+pub use relative_path::{RelativePath, RelativePathBuf};
 pub use crate::roots::VfsRoot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LineEndings {
+    Unix,
+    Dos,
+}
+
+impl Default for LineEndings {
+    fn default() -> Self {
+        LineEndings::Unix
+    }
+}
 
 /// a `Filter` is used to determine whether a file or a folder
 /// under the specific root is included.
@@ -120,6 +132,7 @@ struct VfsFileData {
     path: RelativePathBuf,
     is_overlayed: bool,
     text: Arc<String>,
+    line_endings: LineEndings,
 }
 
 pub struct Vfs {
@@ -180,6 +193,10 @@ impl Vfs {
         rel_path.to_path(root_path)
     }
 
+    pub fn file_line_endings(&self, file: VfsFile) -> LineEndings {
+        self.file(file).line_endings
+    }
+
     pub fn n_roots(&self) -> usize {
         self.roots.len()
     }
@@ -189,9 +206,15 @@ impl Vfs {
             return if let Some(file) = file {
                 Some(file)
             } else {
-                let text = fs::read_to_string(path).unwrap_or_default();
+                let (text, line_endings) = read_to_string(path).unwrap_or_default();
                 let text = Arc::new(text);
-                let file = self.raw_add_file(root, rel_path.clone(), Arc::clone(&text), false);
+                let file = self.raw_add_file(
+                    root,
+                    rel_path.clone(),
+                    Arc::clone(&text),
+                    line_endings,
+                    false,
+                );
                 let change = VfsChange::AddFile { file, text, root, path: rel_path };
                 self.pending_changes.push(change);
                 Some(file)
@@ -200,17 +223,19 @@ impl Vfs {
         None
     }
 
-    pub fn add_file_overlay(&mut self, path: &Path, text: String) -> Option<VfsFile> {
+    pub fn add_file_overlay(&mut self, path: &Path, mut text: String) -> Option<VfsFile> {
+        let line_endings = normalize_newlines(&mut text);
         let (root, rel_path, file) = self.find_root(path)?;
         if let Some(file) = file {
             self.change_file_event(file, text, true);
             Some(file)
         } else {
-            self.add_file_event(root, rel_path, text, true)
+            self.add_file_event(root, rel_path, text, line_endings, true)
         }
     }
 
-    pub fn change_file_overlay(&mut self, path: &Path, new_text: String) {
+    pub fn change_file_overlay(&mut self, path: &Path, mut new_text: String) {
+        let _line_endings = normalize_newlines(&mut new_text);
         if let Some((_root, _path, file)) = self.find_root(path) {
             let file = file.expect("can't change a file which wasn't added");
             self.change_file_event(file, new_text, true);
@@ -249,21 +274,27 @@ impl Vfs {
                     .iter()
                     .map(|&file| (self.file(file).path.clone(), file))
                     .collect::<FxHashMap<_, _>>();
-                for (path, text) in files {
+                for (path, text, line_endings) in files {
                     if let Some(&file) = existing.get(&path) {
                         let text = Arc::clone(&self.file(file).text);
                         cur_files.push((file, path, text));
                         continue;
                     }
                     let text = Arc::new(text);
-                    let file = self.raw_add_file(root, path.clone(), Arc::clone(&text), false);
+                    let file = self.raw_add_file(
+                        root,
+                        path.clone(),
+                        Arc::clone(&text),
+                        line_endings,
+                        false,
+                    );
                     cur_files.push((file, path, text));
                 }
 
                 let change = VfsChange::AddRoot { root, files: cur_files };
                 self.pending_changes.push(change);
             }
-            TaskResult::SingleFile { root, path, text } => {
+            TaskResult::SingleFile { root, path, text, line_endings } => {
                 let existing_file = self.find_file(root, &path);
                 if existing_file.map(|file| self.file(file).is_overlayed) == Some(true) {
                     return;
@@ -273,7 +304,7 @@ impl Vfs {
                         self.remove_file_event(root, path, file);
                     }
                     (None, Some(text)) => {
-                        self.add_file_event(root, path, text, false);
+                        self.add_file_event(root, path, text, line_endings, false);
                     }
                     (Some(file), Some(text)) => {
                         if *self.file(file).text != text {
@@ -294,10 +325,12 @@ impl Vfs {
         root: VfsRoot,
         path: RelativePathBuf,
         text: String,
+        line_endings: LineEndings,
         is_overlay: bool,
     ) -> Option<VfsFile> {
         let text = Arc::new(text);
-        let file = self.raw_add_file(root, path.clone(), text.clone(), is_overlay);
+        let file =
+            self.raw_add_file(root, path.clone(), Arc::clone(&text), line_endings, is_overlay);
         self.pending_changes.push(VfsChange::AddFile { file, root, path, text });
         Some(file)
     }
@@ -320,9 +353,10 @@ impl Vfs {
         root: VfsRoot,
         path: RelativePathBuf,
         text: Arc<String>,
+        line_endings: LineEndings,
         is_overlayed: bool,
     ) -> VfsFile {
-        let data = VfsFileData { root, path, text, is_overlayed };
+        let data = VfsFileData { root, path, text, line_endings, is_overlayed };
         let file = VfsFile(self.files.len() as u32);
         self.files.push(data);
         self.root2files.get_mut(&root).unwrap().insert(file);
@@ -360,6 +394,68 @@ impl Vfs {
 
     fn file_mut(&mut self, file: VfsFile) -> &mut VfsFileData {
         &mut self.files[file.0 as usize]
+    }
+}
+
+fn read_to_string(path: &Path) -> Option<(String, LineEndings)> {
+    let mut text =
+        fs::read_to_string(&path).map_err(|e| log::warn!("failed to read file {}", e)).ok()?;
+    let line_endings = normalize_newlines(&mut text);
+    Some((text, line_endings))
+}
+
+/// Replaces `\r\n` with `\n` in-place in `src`.
+///
+/// Returns error if there's a lone `\r` in the string
+pub fn normalize_newlines(src: &mut String) -> LineEndings {
+    if !src.as_bytes().contains(&b'\r') {
+        return LineEndings::Unix;
+    }
+
+    // We replace `\r\n` with `\n` in-place, which doesn't break utf-8 encoding.
+    // While we *can* call `as_mut_vec` and do surgery on the live string
+    // directly, let's rather steal the contents of `src`. This makes the code
+    // safe even if a panic occurs.
+
+    let mut buf = std::mem::replace(src, String::new()).into_bytes();
+    let mut gap_len = 0;
+    let mut tail = buf.as_mut_slice();
+    loop {
+        let idx = match find_crlf(&tail[gap_len..]) {
+            None => tail.len(),
+            Some(idx) => idx + gap_len,
+        };
+        tail.copy_within(gap_len..idx, 0);
+        tail = &mut tail[idx - gap_len..];
+        if tail.len() == gap_len {
+            break;
+        }
+        gap_len += 1;
+    }
+
+    // Account for removed `\r`.
+    // After `set_len`, `buf` is guaranteed to contain utf-8 again.
+    let new_len = buf.len() - gap_len;
+    unsafe {
+        buf.set_len(new_len);
+        *src = String::from_utf8_unchecked(buf);
+    }
+    return LineEndings::Dos;
+
+    fn find_crlf(src: &[u8]) -> Option<usize> {
+        let mut search_idx = 0;
+        while let Some(idx) = find_cr(&src[search_idx..]) {
+            if src[search_idx..].get(idx + 1) != Some(&b'\n') {
+                search_idx += idx + 1;
+                continue;
+            }
+            return Some(search_idx + idx);
+        }
+        None
+    }
+
+    fn find_cr(src: &[u8]) -> Option<usize> {
+        src.iter().enumerate().find_map(|(idx, &b)| if b == b'\r' { Some(idx) } else { None })
     }
 }
 
