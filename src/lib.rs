@@ -405,8 +405,6 @@ fn read_to_string(path: &Path) -> Option<(String, LineEndings)> {
 }
 
 /// Replaces `\r\n` with `\n` in-place in `src`.
-///
-/// Returns error if there's a lone `\r` in the string
 pub fn normalize_newlines(src: &mut String) -> LineEndings {
     if !src.as_bytes().contains(&b'\r') {
         return LineEndings::Unix;
