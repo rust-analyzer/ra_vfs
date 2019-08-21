@@ -2,7 +2,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{mpsc, Arc},
     time::Duration,
-    thread,
 };
 use crossbeam_channel::{Sender, Receiver, unbounded, RecvError, select};
 use relative_path::RelativePathBuf;
@@ -51,33 +50,6 @@ enum ChangeKind {
 
 const WATCHER_DELAY: Duration = Duration::from_millis(250);
 
-// Like thread::JoinHandle, but joins the thread on drop.
-//
-// This is useful because it guarantees the absence of run-away threads, even if
-// code panics. This is important, because we might see panics in the test and
-// we might be used in an IDE context, where a failed component is just
-// restarted.
-//
-// Because all threads are joined, care must be taken to avoid deadlocks. That
-// typically means ensuring that channels are dropped before the threads.
-struct ScopedThread(Option<thread::JoinHandle<()>>);
-
-impl ScopedThread {
-    fn spawn(name: String, f: impl FnOnce() + Send + 'static) -> ScopedThread {
-        let handle = thread::Builder::new().name(name).spawn(f).unwrap();
-        ScopedThread(Some(handle))
-    }
-}
-
-impl Drop for ScopedThread {
-    fn drop(&mut self) {
-        let res = self.0.take().unwrap().join();
-        if !thread::panicking() {
-            res.unwrap();
-        }
-    }
-}
-
 pub(crate) struct Worker {
     // XXX: field order is significant here.
     //
@@ -87,8 +59,12 @@ pub(crate) struct Worker {
     // thread, but we must keep receiver alive so that the thread does not
     // panic.
     pub(crate) sender: Sender<Task>,
-    _thread: ScopedThread,
+    _thread: jod_thread::JoinHandle<()>,
     pub(crate) receiver: Receiver<VfsTask>,
+}
+
+fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> jod_thread::JoinHandle<()> {
+    jod_thread::Builder::new().name(name.to_string()).spawn(f).expect("failed to spawn a thread")
 }
 
 pub(crate) fn start(roots: Arc<Roots>) -> Worker {
@@ -99,14 +75,14 @@ pub(crate) fn start(roots: Arc<Roots>) -> Worker {
     //    * we want to read all files from a single thread, to guarantee that
     //      we always get fresher versions and never go back in time.
     //    * we want to tear down everything neatly during shutdown.
-    let _thread;
+    let _thread: jod_thread::JoinHandle<()>;
     // This are the channels we use to communicate with outside world.
     // If `input_receiver` is closed we need to tear ourselves down.
     // `output_sender` should not be closed unless the parent died.
     let (input_sender, input_receiver) = unbounded();
     let (output_sender, output_receiver) = unbounded();
 
-    _thread = ScopedThread::spawn("vfs".to_string(), move || {
+    _thread = spawn("vfs", move || {
         // Make sure that the destruction order is
         //
         // * notify_sender
@@ -126,7 +102,7 @@ pub(crate) fn start(roots: Arc<Roots>) -> Worker {
                 .map_err(|e| log::error!("failed to spawn notify {}", e))
                 .ok();
             // Start a silly thread to transform between two channels
-            _notify_thread = ScopedThread::spawn("notify-convertor".to_string(), move || {
+            _notify_thread = spawn("notify-convertor", move || {
                 notify_receiver
                     .into_iter()
                     .for_each(|event| convert_notify_event(event, &watcher_sender))
