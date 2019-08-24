@@ -162,7 +162,10 @@ pub enum VfsChange {
 }
 
 impl Vfs {
-    pub fn new(roots: Vec<RootEntry>, on_task: Box<dyn FnMut(VfsTask) + Send>) -> (Vfs, Vec<VfsRoot>) {
+    pub fn new(
+        roots: Vec<RootEntry>,
+        on_task: Box<dyn FnMut(VfsTask) + Send>,
+    ) -> (Vfs, Vec<VfsRoot>) {
         let roots = Arc::new(Roots::new(roots));
         let worker = io::start(Arc::clone(&roots), on_task);
         let mut root2files = FxHashMap::default();
@@ -474,7 +477,7 @@ mod tests {
     #[test]
     fn vfs_deduplicates() {
         let entries = vec!["/foo", "/bar", "/foo"].into_iter().map(entry).collect();
-        let (_, roots) = Vfs::new(entries);
+        let (_, roots) = Vfs::new(entries, Box::new(|_task| ()));
         assert_eq!(roots.len(), 2);
     }
 }
