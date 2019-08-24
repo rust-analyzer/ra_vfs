@@ -24,7 +24,6 @@ use std::{
     sync::Arc,
 };
 
-use crossbeam_channel::Receiver;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -140,6 +139,7 @@ pub struct Vfs {
     files: Vec<VfsFileData>,
     root2files: FxHashMap<VfsRoot, FxHashSet<VfsFile>>,
     pending_changes: Vec<VfsChange>,
+    #[allow(unused)]
     worker: Worker,
 }
 
@@ -162,14 +162,17 @@ pub enum VfsChange {
 }
 
 impl Vfs {
-    pub fn new(roots: Vec<RootEntry>) -> (Vfs, Vec<VfsRoot>) {
+    pub fn new(
+        roots: Vec<RootEntry>,
+        on_task: Box<dyn FnMut(VfsTask) + Send>,
+    ) -> (Vfs, Vec<VfsRoot>) {
         let roots = Arc::new(Roots::new(roots));
-        let worker = io::start(Arc::clone(&roots));
+        let worker = io::start(Arc::clone(&roots), on_task);
         let mut root2files = FxHashMap::default();
 
         for root in roots.iter() {
             root2files.insert(root, Default::default());
-            worker.sender.send(io::Task::AddRoot { root }).unwrap();
+            worker.send(io::Task::AddRoot { root });
         }
         let res = Vfs { roots, files: Vec::new(), root2files, worker, pending_changes: Vec::new() };
         let vfs_roots = res.roots.iter().collect();
@@ -258,10 +261,6 @@ impl Vfs {
         // FIXME: ideally we should compact changes here, such that we send at
         // most one event per VfsFile.
         mem::replace(&mut self.pending_changes, Vec::new())
-    }
-
-    pub fn task_receiver(&self) -> &Receiver<VfsTask> {
-        &self.worker.receiver
     }
 
     pub fn handle_task(&mut self, task: VfsTask) {
@@ -478,7 +477,7 @@ mod tests {
     #[test]
     fn vfs_deduplicates() {
         let entries = vec!["/foo", "/bar", "/foo"].into_iter().map(entry).collect();
-        let (_, roots) = Vfs::new(entries);
+        let (_, roots) = Vfs::new(entries, Box::new(|_task| ()));
         assert_eq!(roots.len(), 2);
     }
 }

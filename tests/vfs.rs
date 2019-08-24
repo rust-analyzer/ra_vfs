@@ -1,31 +1,36 @@
 use std::{collections::HashSet, fs, time::Duration};
 
 // use flexi_logger::Logger;
-use crossbeam_channel::RecvTimeoutError;
-use ra_vfs::{Vfs, VfsChange, RootEntry, Filter, RelativePath};
+use crossbeam_channel::{RecvTimeoutError, Receiver, unbounded};
+use ra_vfs::{Vfs, VfsChange, RootEntry, Filter, RelativePath, VfsTask};
 use tempfile::tempdir;
 
 /// Processes exactly `num_tasks` events waiting in the `vfs` message queue.
 ///
 /// Panics if there are not exactly that many tasks enqueued for processing.
-fn process_tasks(vfs: &mut Vfs, num_tasks: u32) {
-    process_tasks_in_range(vfs, num_tasks, num_tasks);
+fn process_tasks(vfs: &mut Vfs, task_receiver: &mut Receiver<VfsTask>, num_tasks: u32) {
+    process_tasks_in_range(vfs, task_receiver, num_tasks, num_tasks);
 }
 
 /// Processes up to `max_count` events waiting in the `vfs` message queue.
 ///
 /// Panics if it cannot process at least `min_count` events.
 /// Panics if more than `max_count` events are enqueued for processing.
-fn process_tasks_in_range(vfs: &mut Vfs, min_count: u32, max_count: u32) {
+fn process_tasks_in_range(
+    vfs: &mut Vfs,
+    task_receiver: &mut Receiver<VfsTask>,
+    min_count: u32,
+    max_count: u32,
+) {
     for i in 0..max_count {
-        let task = match vfs.task_receiver().recv_timeout(Duration::from_secs(3)) {
+        let task = match task_receiver.recv_timeout(Duration::from_secs(3)) {
             Err(RecvTimeoutError::Timeout) if i >= min_count => return,
             otherwise => otherwise.unwrap(),
         };
         log::debug!("{:?}", task);
         vfs.handle_task(task);
     }
-    assert!(vfs.task_receiver().is_empty());
+    assert!(task_receiver.is_empty());
 }
 
 macro_rules! assert_match {
@@ -64,6 +69,11 @@ impl Filter for IncludeRustFiles {
     }
 }
 
+fn task_chan() -> (Receiver<VfsTask>, Box<dyn FnMut(VfsTask) + Send>) {
+    let (sender, receiver) = unbounded();
+    (receiver, Box::new(move |task| sender.send(task).unwrap()))
+}
+
 #[test]
 fn test_vfs_ignore() -> std::io::Result<()> {
     // flexi_logger::Logger::with_str("vfs=debug,ra_vfs=debug").start().unwrap();
@@ -95,11 +105,15 @@ fn test_vfs_ignore() -> std::io::Result<()> {
     let a_root = dir.path().join("ignore_a");
     let b_root = dir.path().join("ignore_a/b");
 
-    let (mut vfs, _) = Vfs::new(vec![
-        RootEntry::new(a_root, IncludeRustFiles::boxed()),
-        RootEntry::new(b_root, IncludeRustFiles::boxed()),
-    ]);
-    process_tasks(&mut vfs, 2);
+    let (mut task_receiver, cb) = task_chan();
+    let (mut vfs, _) = Vfs::new(
+        vec![
+            RootEntry::new(a_root, IncludeRustFiles::boxed()),
+            RootEntry::new(b_root, IncludeRustFiles::boxed()),
+        ],
+        cb,
+    );
+    process_tasks(&mut vfs, &mut task_receiver, 2);
     {
         let files = vfs
             .commit_changes()
@@ -125,7 +139,12 @@ fn test_vfs_ignore() -> std::io::Result<()> {
     }
 
     // rust-analyzer#734: fsevents has a bunch of events still sitting around.
-    process_tasks_in_range(&mut vfs, 0, if cfg!(target_os = "macos") { 7 } else { 0 });
+    process_tasks_in_range(
+        &mut vfs,
+        &mut task_receiver,
+        0,
+        if cfg!(target_os = "macos") { 7 } else { 0 },
+    );
     assert!(vfs.commit_changes().is_empty());
 
     // These will get filtered out
@@ -139,7 +158,7 @@ fn test_vfs_ignore() -> std::io::Result<()> {
     fs::write(dir.path().join("ignore_a/node_modules/sub1/new.rs"), "new hello").unwrap();
 
     assert_match!(
-        vfs.task_receiver().recv_timeout(Duration::from_millis(300)), // slightly more than watcher debounce delay
+        task_receiver.recv_timeout(Duration::from_millis(300)), // slightly more than watcher debounce delay
         Err(RecvTimeoutError::Timeout)
     );
 
@@ -169,11 +188,15 @@ fn test_vfs_works() -> std::io::Result<()> {
     let a_root = dir.path().join("a");
     let b_root = dir.path().join("a/b");
 
-    let (mut vfs, _) = Vfs::new(vec![
-        RootEntry::new(a_root, IncludeRustFiles::boxed()),
-        RootEntry::new(b_root, IncludeRustFiles::boxed()),
-    ]);
-    process_tasks(&mut vfs, 2);
+    let (mut task_receiver, cb) = task_chan();
+    let (mut vfs, _) = Vfs::new(
+        vec![
+            RootEntry::new(a_root, IncludeRustFiles::boxed()),
+            RootEntry::new(b_root, IncludeRustFiles::boxed()),
+        ],
+        cb,
+    );
+    process_tasks(&mut vfs, &mut task_receiver, 2);
     {
         let files = vfs
             .commit_changes()
@@ -199,11 +222,16 @@ fn test_vfs_works() -> std::io::Result<()> {
     }
 
     // rust-analyzer#734: fsevents has a bunch of events still sitting around.
-    process_tasks_in_range(&mut vfs, 0, if cfg!(target_os = "macos") { 7 } else { 0 });
+    process_tasks_in_range(
+        &mut vfs,
+        &mut task_receiver,
+        0,
+        if cfg!(target_os = "macos") { 7 } else { 0 },
+    );
     assert!(vfs.commit_changes().is_empty());
 
     fs::write(&dir.path().join("a/b/baz.rs"), "quux").unwrap();
-    process_tasks(&mut vfs, 1);
+    process_tasks(&mut vfs, &mut task_receiver, 1);
     assert_match!(
         vfs.commit_changes().as_slice(),
         [VfsChange::ChangeFile { text, .. }],
@@ -219,7 +247,7 @@ fn test_vfs_works() -> std::io::Result<()> {
 
     // changing file on disk while overlayed doesn't generate a VfsChange
     fs::write(&dir.path().join("a/b/baz.rs"), "corge").unwrap();
-    process_tasks(&mut vfs, 1);
+    process_tasks(&mut vfs, &mut task_receiver, 1);
     assert_match!(vfs.commit_changes().as_slice(), []);
 
     // removing overlay restores data on disk
@@ -245,7 +273,7 @@ fn test_vfs_works() -> std::io::Result<()> {
 
     fs::create_dir_all(dir.path().join("a/sub1/sub2")).unwrap();
     fs::write(dir.path().join("a/sub1/sub2/new.rs"), "new hello").unwrap();
-    process_tasks(&mut vfs, 1);
+    process_tasks(&mut vfs, &mut task_receiver, 1);
     assert_match!(vfs.commit_changes().as_slice(), [VfsChange::AddFile { text, path, .. }], {
         assert_eq!(text.as_str(), "new hello");
         assert_eq!(path, "sub1/sub2/new.rs");
@@ -261,7 +289,7 @@ fn test_vfs_works() -> std::io::Result<()> {
     //
     // rust-analyzer#827: Windows generates extra `Write` events when
     // renaming? meaning we have extra tasks to process.
-    process_tasks_in_range(&mut vfs, 1, if cfg!(windows) { 4 } else { 2 });
+    process_tasks_in_range(&mut vfs, &mut task_receiver, 1, if cfg!(windows) { 4 } else { 2 });
     match vfs.commit_changes().as_slice() {
         [VfsChange::RemoveFile { path: removed_path, .. }, VfsChange::AddFile { text, path: added_path, .. }] =>
         {
@@ -288,7 +316,7 @@ fn test_vfs_works() -> std::io::Result<()> {
     }
 
     fs::remove_file(&dir.path().join("a/sub1/sub2/new1.rs")).unwrap();
-    process_tasks(&mut vfs, 1);
+    process_tasks(&mut vfs, &mut task_receiver, 1);
     assert_match!(
         vfs.commit_changes().as_slice(),
         [VfsChange::RemoveFile { path, .. }],
@@ -303,7 +331,7 @@ fn test_vfs_works() -> std::io::Result<()> {
             assert_eq!(text.as_str(), "memfile")
         );
         fs::write(&dir.path().join("a/memfile.rs"), "ignore me").unwrap();
-        process_tasks(&mut vfs, 1);
+        process_tasks(&mut vfs, &mut task_receiver, 1);
         assert_match!(vfs.commit_changes().as_slice(), []);
     }
 
@@ -312,7 +340,7 @@ fn test_vfs_works() -> std::io::Result<()> {
     fs::write(&dir.path().join("a/target/new.rs"), "ignore me").unwrap();
 
     assert_match!(
-        vfs.task_receiver().recv_timeout(Duration::from_millis(300)), // slightly more than watcher debounce delay
+        task_receiver.recv_timeout(Duration::from_millis(300)), // slightly more than watcher debounce delay
         Err(RecvTimeoutError::Timeout)
     );
 
