@@ -58,15 +58,24 @@ pub(crate) struct Worker {
     // opposite side of the channel) noticed shutdown. Then, we must join the
     // thread, but we must keep receiver alive so that the thread does not
     // panic.
-    pub(crate) sender: Sender<Task>,
+    sender: Sender<Task>,
     _thread: jod_thread::JoinHandle<()>,
+}
+
+impl Worker {
+    pub(crate) fn send(&self, task: Task) {
+        self.sender.send(task).unwrap()
+    }
 }
 
 fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> jod_thread::JoinHandle<()> {
     jod_thread::Builder::new().name(name.to_string()).spawn(f).expect("failed to spawn a thread")
 }
 
-pub(crate) fn start(roots: Arc<Roots>, mut output_sender: Box<dyn FnMut(VfsTask) + Send>) -> Worker {
+pub(crate) fn start(
+    roots: Arc<Roots>,
+    mut output_sender: Box<dyn FnMut(VfsTask) + Send>,
+) -> Worker {
     // This is a pretty elaborate setup of threads & channels! It is
     // explained by the following concerns:
     //    * we need to burn a thread translating from notify's mpsc to

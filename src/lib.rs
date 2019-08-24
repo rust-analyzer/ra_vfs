@@ -169,7 +169,7 @@ impl Vfs {
 
         for root in roots.iter() {
             root2files.insert(root, Default::default());
-            worker.sender.send(io::Task::AddRoot { root }).unwrap();
+            worker.send(io::Task::AddRoot { root });
         }
         let res = Vfs { roots, files: Vec::new(), root2files, worker, pending_changes: Vec::new() };
         let vfs_roots = res.roots.iter().collect();
