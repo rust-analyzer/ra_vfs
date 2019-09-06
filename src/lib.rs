@@ -161,13 +161,17 @@ pub enum VfsChange {
     ChangeFile { file: VfsFile, text: Arc<String> },
 }
 
+#[derive(Clone, Copy)]
+pub struct Watch(pub bool);
+
 impl Vfs {
     pub fn new(
         roots: Vec<RootEntry>,
         on_task: Box<dyn FnMut(VfsTask) + Send>,
+        watch: Watch,
     ) -> (Vfs, Vec<VfsRoot>) {
         let roots = Arc::new(Roots::new(roots));
-        let worker = io::start(Arc::clone(&roots), on_task);
+        let worker = io::start(Arc::clone(&roots), on_task, watch);
         let mut root2files = FxHashMap::default();
 
         for root in roots.iter() {
@@ -224,6 +228,10 @@ impl Vfs {
             };
         }
         None
+    }
+
+    pub fn notify_changed(&mut self, path: PathBuf) {
+        self.worker.send(io::Task::NotifyChanged { path })
     }
 
     pub fn add_file_overlay(&mut self, path: &Path, mut text: String) -> Option<VfsFile> {
@@ -477,7 +485,7 @@ mod tests {
     #[test]
     fn vfs_deduplicates() {
         let entries = vec!["/foo", "/bar", "/foo"].into_iter().map(entry).collect();
-        let (_, roots) = Vfs::new(entries, Box::new(|_task| ()));
+        let (_, roots) = Vfs::new(entries, Box::new(|_task| ()), Watch(true));
         assert_eq!(roots.len(), 2);
     }
 }

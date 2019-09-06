@@ -8,10 +8,11 @@ use relative_path::RelativePathBuf;
 use walkdir::WalkDir;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher as _Watcher};
 
-use crate::{Roots, VfsRoot, VfsTask, roots::FileType, LineEndings, read_to_string};
+use crate::{Roots, VfsRoot, VfsTask, roots::FileType, LineEndings, read_to_string, Watch};
 
 pub(crate) enum Task {
     AddRoot { root: VfsRoot },
+    NotifyChanged { path: PathBuf },
 }
 
 /// `TaskResult` transfers files read on the IO thread to the VFS on the main
@@ -75,6 +76,7 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> jod_thread::JoinHandl
 pub(crate) fn start(
     roots: Arc<Roots>,
     mut output_sender: Box<dyn FnMut(VfsTask) + Send>,
+    watch: Watch,
 ) -> Worker {
     // This is a pretty elaborate setup of threads & channels! It is
     // explained by the following concerns:
@@ -105,15 +107,25 @@ pub(crate) fn start(
             // These are `std` channels notify will send events to
             let (notify_sender, notify_receiver) = mpsc::channel();
 
-            let mut watcher = notify::watcher(notify_sender, WATCHER_DELAY)
-                .map_err(|e| log::error!("failed to spawn notify {}", e))
-                .ok();
-            // Start a silly thread to transform between two channels
-            _notify_thread = spawn("notify-convertor", move || {
-                notify_receiver
-                    .into_iter()
-                    .for_each(|event| convert_notify_event(event, &watcher_sender))
-            });
+            let mut watcher = if watch.0 {
+                match notify::watcher(notify_sender, WATCHER_DELAY) {
+                    Ok(watcher) => {
+                        // Start a silly thread to transform between two channels
+                        _notify_thread = spawn("notify-convertor", move || {
+                            notify_receiver
+                                .into_iter()
+                                .for_each(|event| convert_notify_event(event, &watcher_sender))
+                        });
+                        Ok(watcher)
+                    }
+                    Err(e) => {
+                        log::error!("failed to spawn notify {}", e);
+                        Err(watcher_sender)
+                    }
+                }
+            } else {
+                Err(watcher_sender)
+            };
 
             // Process requests from the called or notifications from
             // watcher until the caller says stop.
@@ -127,7 +139,10 @@ pub(crate) fn start(
                             break
                         },
                         Ok(Task::AddRoot { root }) => {
-                            watch_root(watcher.as_mut(), &mut output_sender, &*roots, root);
+                            watch_root(watcher.as_mut().ok(), &mut output_sender, &*roots, root);
+                        }
+                        Ok(Task::NotifyChanged { path }) => {
+                            handle_notify_changed(&mut output_sender, &*roots, path);
                         }
                     },
                     // Watcher send us changes. If **this** channel is
@@ -136,7 +151,7 @@ pub(crate) fn start(
                     recv(watcher_receiver) -> event => match event {
                         Err(RecvError) => panic!("watcher is dead"),
                         Ok((path, change)) => {
-                            handle_change(watcher.as_mut(), &mut output_sender, &*roots, path, change);
+                            handle_change(watcher.as_mut().ok(), &mut output_sender, &*roots, path, change);
                         }
                     },
                 }
@@ -271,4 +286,21 @@ fn watch_one(watcher: &mut RecommendedWatcher, dir: &Path) {
         Ok(()) => log::debug!("watching \"{}\"", dir.display()),
         Err(e) => log::warn!("could not watch \"{}\": {}", dir.display(), e),
     }
+}
+
+fn handle_notify_changed(sender: &mut dyn FnMut(VfsTask), roots: &Roots, path: PathBuf) {
+    if !path.is_file() {
+        return;
+    };
+    let (root, rel_path) = match roots.find(&path, FileType::File) {
+        None => return,
+        Some(it) => it,
+    };
+    let (text, line_endings) = match read_to_string(&path) {
+        Some((text, line_endings)) => (Some(text), line_endings),
+        None => (None, LineEndings::default()),
+    };
+
+    let res = TaskResult::SingleFile { root, path: rel_path, text, line_endings };
+    sender(VfsTask(res))
 }
