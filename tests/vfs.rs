@@ -2,7 +2,7 @@ use std::{collections::HashSet, fs, time::Duration};
 
 // use flexi_logger::Logger;
 use crossbeam_channel::{RecvTimeoutError, Receiver, unbounded};
-use ra_vfs::{Vfs, VfsChange, RootEntry, Filter, RelativePath, VfsTask};
+use ra_vfs::{Vfs, VfsChange, RootEntry, Filter, RelativePath, VfsTask, Watch};
 use tempfile::tempdir;
 
 /// Processes exactly `num_tasks` events waiting in the `vfs` message queue.
@@ -112,6 +112,7 @@ fn test_vfs_ignore() -> std::io::Result<()> {
             RootEntry::new(b_root, IncludeRustFiles::boxed()),
         ],
         cb,
+        Watch(true),
     );
     process_tasks(&mut vfs, &mut task_receiver, 2);
     {
@@ -195,6 +196,7 @@ fn test_vfs_works() -> std::io::Result<()> {
             RootEntry::new(b_root, IncludeRustFiles::boxed()),
         ],
         cb,
+        Watch(true),
     );
     process_tasks(&mut vfs, &mut task_receiver, 2);
     {
@@ -345,4 +347,33 @@ fn test_vfs_works() -> std::io::Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn test_disabled_watch() {
+    let files = [("a/foo.rs", "hello"), ("a/bar.rs", "world")];
+
+    let dir = tempdir().unwrap();
+    for (path, text) in files.iter() {
+        let file_path = dir.path().join(path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(file_path, text).unwrap();
+    }
+
+    let a_root = dir.path().join("a");
+
+    let (mut task_receiver, cb) = task_chan();
+    let (mut vfs, _) =
+        Vfs::new(vec![RootEntry::new(a_root, IncludeRustFiles::boxed())], cb, Watch(false));
+    process_tasks(&mut vfs, &mut task_receiver, 1);
+    assert_eq!(vfs.commit_changes().len(), 1);
+
+    fs::write(dir.path().join("a/foo.rs"), "goodbye").unwrap();
+    assert_match!(
+        task_receiver.recv_timeout(Duration::from_millis(300)),
+        Err(RecvTimeoutError::Timeout)
+    );
+    vfs.notify_changed(dir.path().join("a/foo.rs"));
+    process_tasks(&mut vfs, &mut task_receiver, 1);
+    assert_eq!(vfs.commit_changes().len(), 1);
 }
