@@ -126,7 +126,7 @@ fn test_vfs_ignore() -> std::io::Result<()> {
                 };
                 files.into_iter().map(|(_id, path, text)| {
                     let text: String = (&*text).clone();
-                    (format!("{}", path.display()), text)
+                    (format!("{}", path), text)
                 })
             })
             .collect::<HashSet<_>>();
@@ -210,7 +210,7 @@ fn test_vfs_works() -> std::io::Result<()> {
                 };
                 files.into_iter().map(|(_id, path, text)| {
                     let text: String = (&*text).clone();
-                    (format!("{}", path.display()), text)
+                    (format!("{}", path), text)
                 })
             })
             .collect::<HashSet<_>>();
