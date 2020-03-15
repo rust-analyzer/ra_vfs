@@ -96,7 +96,7 @@ impl Roots {
         (0..self.roots.len()).into_iter().map(|idx| VfsRoot(idx as u32))
     }
     pub(crate) fn path(&self, root: VfsRoot) -> &Path {
-        self.root(root).path().as_path()
+        self.root(root).path()
     }
 
     /// Checks if root contains a path with the given `FileType`
@@ -109,7 +109,7 @@ impl Roots {
     ) -> Option<RelativePathBuf> {
         let data = self.root(root);
         iter::once(data.path())
-            .chain(data.canonical_path.as_ref().into_iter())
+            .chain(data.canonical_path.iter().map(PathBuf::as_path))
             .find_map(|base| to_relative_path(base, path, &data, expected))
     }
 
@@ -127,7 +127,7 @@ impl RootData {
         RootData { root: entry.path, filter: entry.filter, canonical_path, excluded_dirs }
     }
 
-    fn path(&self) -> &PathBuf {
+    fn path(&self) -> &Path {
         &self.root
     }
 
