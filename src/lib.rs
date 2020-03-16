@@ -187,6 +187,11 @@ impl Vfs {
         self.roots.path(root).to_path_buf()
     }
 
+    pub fn path2root(&self, path: &Path) -> Option<VfsRoot> {
+        let (root, _path) = self.roots.find(path, FileType::Dir)?;
+        Some(root)
+    }
+
     pub fn path2file(&self, path: &Path) -> Option<VfsFile> {
         if let Some((_root, _path, Some(file))) = self.find_root(path) {
             return Some(file);
