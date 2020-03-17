@@ -4,6 +4,6 @@
 
 A virtual file system abstraction for rust-analyzer.
 
-This lives outside of the main rust-analyzer repository because we to
+This lives outside of the main rust-analyzer repository because we want to
 separate CI. VFS is hugely platform dependent, so CI for it tends to
 be longer and more brittle.
