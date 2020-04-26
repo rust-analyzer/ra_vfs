@@ -18,5 +18,5 @@ notify = "4.0.9"
 parking_lot = "0.10.0"
 
 [dev-dependencies]
+flexi_logger = "0.15.2"
 tempfile = "3"
-flexi_logger = "0.14.0"
