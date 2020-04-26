@@ -250,11 +250,14 @@ impl Vfs {
         }
     }
 
-    pub fn change_file_overlay(&mut self, path: &Path, mut new_text: String) {
-        let _line_endings = normalize_newlines(&mut new_text);
+    pub fn change_file_overlay<F: FnOnce(&mut String)>(&mut self, path: &Path, change: F) {
         if let Some((_root, _path, file)) = self.find_root(path) {
             let file = file.expect("can't change a file which wasn't added");
-            self.change_file_event(file, new_text, true);
+            let mut text = self.file(file).text.as_ref().clone();
+            change(&mut text);
+            let _line_endings = normalize_newlines(&mut text);
+
+            self.change_file_event(file, text, true);
         }
     }
 
