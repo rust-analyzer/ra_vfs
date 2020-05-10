@@ -265,10 +265,12 @@ impl Vfs {
         let (root, rel_path, file) = self.find_root(path)?;
         let file = file.expect("can't remove a file which wasn't added");
         let full_path = rel_path.to_path(&self.roots.path(root));
-        if let Ok(text) = fs::read_to_string(&full_path) {
-            self.change_file_event(file, text, false);
-        } else {
-            self.remove_file_event(root, rel_path, file);
+        match fs::read_to_string(&full_path) {
+            Ok(mut text) => {
+                let _line_endings = normalize_newlines(&mut text);
+                self.change_file_event(file, text, false);
+            }
+            Err(_) => self.remove_file_event(root, rel_path, file),
         }
         Some(file)
     }
